@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+infra/*.local.bicepparam
+.env
+*.log
+*.tsbuildinfo
+node_modules
