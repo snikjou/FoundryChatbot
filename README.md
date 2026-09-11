@@ -23,7 +23,7 @@ Core capabilities include:
 - An Azure subscription with an existing Microsoft Foundry project and a published agent. The application does not create the agent or deploy its model.
 - The Foundry project endpoint and agent name, plus an Azure account authorized to use the project (for example, with the Azure AI User role at project scope).
 
-The Express backend is included in this repository. Docker and Bicep are not required for local development; Azure hosting requirements are covered in [the deployment guide](infra/README.md).
+The Express backend is included in this repository. Bicep is only needed for Azure deployment; Azure hosting requirements are covered in [the deployment guide](infra/README.md). Docker is not required.
 
 ## Run Locally
 
@@ -103,9 +103,9 @@ npm run build
 npm start
 ```
 
-Open `http://localhost:3001` (or the port specified by `PORT`). Express serves both the built widget and the API, so Vite is not needed. Stop the development backend first if it is already using port 3001. Re-run `npm run build` after frontend changes.
+Open `http://localhost:3001` (or the port specified by `PORT`). Express serves both the built widget and the API, so Vite is not needed. Stop the development backend first if it is already using port 3001. Re-run `npm run build` after frontend or backend changes.
 
-`npm start` uses `tsx`, which is a development dependency; do not install with `--omit=dev` for this workflow. For a production container with compiled JavaScript and production-only dependencies, use the [Dockerfile](Dockerfile) and [Azure deployment guide](infra/README.md). A local Docker container does not automatically inherit your host's Azure CLI login.
+`npm run build` compiles the server into `build/server` and the UI into `dist`. `npm start` runs the compiled server with Node.js; `tsx` and other development dependencies are not needed at runtime. Build with development dependencies installed before pruning or installing production-only dependencies. Run from the repository root so the server can find `dist` and your local `.env`.
 
 ## Tests and Checks
 
@@ -115,7 +115,7 @@ npm run lint
 npm run build
 ```
 
-The automated tests cover streaming response handling and citation formatting and do not require Azure credentials. The build type-checks the project and produces the widget assets; it does not deploy anything to Azure.
+The automated tests cover streaming response handling, citation formatting, and the deployment script's preview, packaging, and failure handling. They use mocked Azure commands and do not require Azure credentials. The build type-checks the project and produces the widget assets and compiled server; it does not deploy anything to Azure.
 
 ## Troubleshooting
 
@@ -138,7 +138,19 @@ Disable response buffering for `/api/chat` in any reverse proxy or hosting gatew
 
 ## Azure Deployment
 
-The repository includes Bicep templates, a production Dockerfile, and a two-stage deployment script for Azure Container Apps with managed-identity access to your existing Foundry project. See [the Azure deployment guide](infra/README.md) for configuration, permissions, deployment, validation, costs, and cleanup. Deployment does not create or modify the existing agent or model.
+Deploy the UI and API together to a single **Azure Web App** using the built-in Node.js 22 runtime. No Docker, container registry, or Container Apps environment is needed. The Web App uses a system-assigned managed identity to access your existing Foundry project.
+
+Review the project settings in [infra/main.bicepparam](infra/main.bicepparam), then run:
+
+```bash
+az login
+az bicep install
+npm run deploy -- "<hosting-subscription-id>"
+```
+
+The command installs dependencies, runs tests and lint, builds the app, provisions a Basic B1 App Service plan and Web App, assigns Foundry access, uploads a production ZIP, and prints the HTTPS URL and embed script. Run the same command for subsequent updates. To preview infrastructure changes without deploying, append `--what-if`.
+
+See [the Azure deployment guide](infra/README.md) for prerequisites, optional parameter files, permissions, migration from Container Apps, costs, and cleanup. B1 is a paid, always-on plan. Deployment does not create or modify the existing agent or model, and does not automatically delete old container resources.
 
 ## Website Embed
 

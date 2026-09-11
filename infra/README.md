@@ -1,68 +1,98 @@
 # Azure Deployment
 
-These Bicep templates deploy the widget and Express API together on Azure Container Apps. They connect to an **existing Microsoft Foundry project and published agent**; they do not create or change the agent, model deployment, search indexes, or knowledge sources. This preserves the chatbot's existing behavior and avoids assuming model quota or duplicating its data.
+Deploy the widget and Express API together as a single **Azure Web App**, using App Service's built-in Node.js 22 runtime. No Docker build, container registry, or Container Apps environment is needed.
+
+The app connects to an **existing Microsoft Foundry project and published agent**. Deployment does not create or change the agent, model deployment, search indexes, or knowledge sources.
 
 ## Resources
 
 | Resource | Purpose |
 | --- | --- |
 | Resource group | Contains all new hosting resources |
-| Container Apps environment | Consumption workload profile, managed HTTPS ingress |
-| Container App | 0.5 vCPU, 1 GiB, one warm replica, port 3001 |
-| Azure Container Registry | Basic SKU, admin credentials disabled, authenticated image pulls |
-| User-assigned managed identity | Passwordless Foundry access and registry pulls |
-| Log Analytics workspace | Container console and system logs, 30-day retention, 1 GB daily ingestion cap |
-| Role assignments | AcrPull on the new registry; Azure AI User on the existing Foundry project |
+| Linux App Service plan | Basic B1, one instance |
+| Web App | Node.js 22 LTS, HTTPS only, TLS 1.2 minimum, Always On |
+| System-assigned managed identity | Passwordless Foundry access, attached to the Web App |
+| Role assignment | Azure AI User on the existing Foundry project |
 
-The hosting resource group is named `rg-<environmentName>`. Resource names and role assignment IDs are deterministic. Re-running deployment updates the same resources with a uniquely tagged image. A second environment name creates separate hosting resources.
+The resource group is `rg-<environmentName>`, the plan is `asp-<environmentName>`, and the Web App is `app-<environmentName>-<unique-suffix>`. Names are deterministic: re-running the command updates the same resources and replaces the application package. Another environment name creates separate hosting resources.
 
 ## Prerequisites
 
-- Azure CLI 2.61 or newer, Bicep CLI (`az bicep install`), Bash, and Node.js 22 or newer. A local Docker daemon is not required: the deployment script builds in ACR Tasks.
-- An Azure login (`az login`) with permission to deploy resource groups at subscription scope and resources within them. Contributor plus Role Based Access Control Administrator at the required scopes, or Owner, are examples. The deployer also needs role-assignment permission on the existing Foundry project, plus permission to run ACR builds. The app itself receives only its two runtime roles.
-- Register `Microsoft.App`, `Microsoft.ContainerRegistry`, `Microsoft.ManagedIdentity`, `Microsoft.OperationalInsights`, and `Microsoft.CognitiveServices` in the relevant subscriptions before deployment. For example: `az provider register --namespace Microsoft.App --subscription <subscription-id> --wait`.
-- An existing `Microsoft.CognitiveServices/accounts/projects` Foundry project, its HTTPS project endpoint, and a published agent name. Legacy hub-based projects are not supported by this application. The project may be in another subscription in the same Entra tenant.
-- Public network access to the Foundry endpoint from Container Apps. This baseline does not provision private endpoints, private DNS, a VNet, firewall exceptions, or custom domains. A private-only Foundry deployment requires a separately designed network integration.
-- An Azure region supporting Container Apps and capacity for the requested resources. ACR Tasks must be available for the subscription.
+- Linux or WSL with Bash, Node.js 22.12 or newer (22 LTS recommended), npm, `zip`, and `curl`. Builds happen locally and production dependencies are included in the ZIP; use Linux to match the hosting OS, especially if native dependencies are added later.
+- Azure CLI 2.61 or newer and Bicep CLI (`az bicep install`). Use a current Azure CLI so ZIP deployment supports Entra authentication with password-based publishing disabled.
+- An Azure login with permission to create resource groups at subscription scope, deploy App Service resources, and assign roles on the existing Foundry project. Contributor plus Role Based Access Control Administrator at the appropriate scopes, or Owner, are examples. The script registers `Microsoft.Web` in the hosting subscription during deployment.
+- An existing `Microsoft.CognitiveServices/accounts/projects` Foundry project, its HTTPS endpoint, and a published agent name. Legacy hub-based projects are not supported. The project may be in another subscription in the same Entra tenant.
+- Public network access to the Foundry endpoint from App Service. This baseline does not create private endpoints, a VNet, firewall exceptions, or custom domains. A private-only Foundry deployment requires separate network integration.
+- A region with Linux App Service support and B1 capacity. B1 and Foundry usage incur charges; this is not a free-tier deployment.
 
-Use the project endpoint from the Foundry portal, not an Azure OpenAI `/openai/` endpoint. Verify that the account, resource group, project name and endpoint all identify the same project.
+## One-Command Deployment
 
-## Configure and Deploy
+Review [main.bicepparam](main.bicepparam). Its existing project settings are retained; verify that they refer to your intended Foundry project. Set `environmentName` and `location`, and use the published agent name, not a model deployment name. The account, resource group, project name, and HTTPS project endpoint must all identify the same project. Do not add a trailing slash to the endpoint.
 
-From the repository root, create an environment-specific parameter file:
-
-```bash
-cp infra/main.bicepparam infra/dev.local.bicepparam
-```
-
-Edit the local parameter file and replace every `REPLACE_WITH...` value. Set `environmentName` and `location`. For a Foundry project in another subscription, also add `param foundrySubscriptionId = '<foundry-subscription-id>'`. Local parameter files are gitignored; the checked-in example contains no credentials.
-
-Review the foundational resource changes without deploying:
+From the repository root:
 
 ```bash
-bash infra/deploy.sh <hosting-subscription-id> infra/dev.local.bicepparam --what-if
+az login
+az bicep install
+npm run deploy -- "<hosting-subscription-id>"
 ```
 
-The first-stage preview excludes the Container App because its image does not exist yet. Deploy with:
+In Codespaces or a remote terminal, use `az login --use-device-code` when browser sign-in is unavailable. You do not need to run `npm ci` separately: the deploy command installs its own dependencies.
+
+The script:
+
+1. Compiles and validates the parameter file.
+2. Registers `Microsoft.Web` and runs Azure provider-level preflight validation. Quota or permission failures stop here, before building or creating app resources.
+3. Installs dependencies and runs tests, lint, and the production build.
+4. Packages only `package.json`, `package-lock.json`, `build/server`, `dist`, and production `node_modules` in a temporary ZIP. `.env`, source code, Git history, and local Azure credentials are excluded.
+5. Deploys the App Service plan, Web App, managed identity, and Foundry role assignment in one Bicep deployment.
+6. Uploads the ZIP using `az webapp deploy`, waits for startup, and prints the HTTPS URL and embed script.
+7. Checks `/api/status`, retrying transient errors while new role assignments propagate.
+
+App Service runs `npm start` with its own `PORT` environment variable. The package is prebuilt, so remote build is disabled and `WEBSITE_RUN_FROM_PACKAGE=1` mounts the ZIP read-only. No API keys, publish profiles, client secrets, Docker commands, or CI/CD service are needed. The script uses the specified subscription without changing your default subscription.
+
+Run the same command to update the app after code changes. Deployment can restart the app and interrupt active chats; this minimal setup has no deployment slots or zero-downtime guarantee. To roll back, deploy a previously verified code version with its matching lockfile and the same parameter file.
+
+## Preview or Use Another Environment
+
+Preview all infrastructure changes without building, registering providers, uploading code, or creating resources:
 
 ```bash
-bash infra/deploy.sh <hosting-subscription-id> infra/dev.local.bicepparam
+npm run deploy -- "<hosting-subscription-id>" --what-if
 ```
 
-The script provisions the infrastructure and role assignments, builds/tests the image remotely, deploys the Container App, prints its HTTPS URL and embed script, and checks `/api/status`. It does not change your default Azure subscription. Build uploads use an allowlisted `.dockerignore`; `.env`, Azure credentials, Git history, and local dependencies are excluded. The runtime image runs as the non-root `node` user and contains compiled JavaScript, static assets, and production dependencies only.
+If `Microsoft.Web` has never been registered, register it once before previewing: `az provider register --namespace Microsoft.Web --subscription <hosting-subscription-id> --wait`. The normal deploy command does this automatically.
 
-New managed-identity and RBAC assignments can take several minutes to propagate. If the image pull or final connectivity check fails for that reason, inspect the error, allow propagation, and rerun. The script does not delete resources on a failed deployment.
-
-To preview or deploy the app separately after building an image, use:
+For optional, gitignored environment-specific settings:
 
 ```bash
-az deployment sub what-if --subscription <hosting-subscription-id> \
-  --location eastus2 --template-file infra/main.bicep \
-  --parameters infra/dev.local.bicepparam \
-  deployApplication=true containerImage=<registry>.azurecr.io/chatbot:<tag>
+cp -n infra/main.bicepparam infra/dev.local.bicepparam
+npm run deploy -- "<hosting-subscription-id>" infra/dev.local.bicepparam --what-if
+npm run deploy -- "<hosting-subscription-id>" infra/dev.local.bicepparam
 ```
 
-Replace `what-if` with `create` to apply it. Use the same location and environment parameters as the first stage. A specific existing image tag or digest can also be used to roll back the code. Foundation-only deployments are incremental and do not remove an already deployed Container App.
+Edit that local file before deploying. For Foundry in another subscription, add `param foundrySubscriptionId = '<foundry-subscription-id>'`. Parameters contain resource identifiers, not credentials.
+
+The underlying Bash entry point is also available: `bash infra/deploy.sh <subscription-id> [parameters.bicepparam] [--what-if]`.
+
+## B1 Quota Errors
+
+`SubscriptionIsOverQuotaForSku` with `Current Limit (B1 VMs): 0` means Azure has not allocated quota for this plan in the selected region. It is not an npm, application, or Bicep syntax error. Rebuilding the app will not resolve it.
+
+To keep the dedicated B1 plan:
+
+1. In Azure Portal, open **Help + support > Create a support request**.
+2. Select **Service and subscription limits (quotas)** and **App Service**, using the hosting subscription and the region from your parameter file.
+3. Request the minimum new B1 VM limit shown in Azure's error. For zero current usage and this one-instance plan, request a limit of at least **1**.
+4. After approval, rerun the same deployment command.
+
+Quota availability depends on the subscription offer and region; Azure may require an eligible subscription or a different region. The script does not silently change regions, upgrade tiers, or reuse another application's plan. Preflight does not reserve capacity, so deployment can still fail if capacity or quota changes afterwards.
+
+## Migrating from Container Apps
+
+Deploy with the existing environment parameters, verify the new Web App, and update the host website's embed script and CSP to its new `azurewebsites.net` origin.
+
+**Old resources are not automatically deleted.** Bicep deployments are incremental. An existing Container App, Container Apps environment, registry, Log Analytics workspace, user-assigned identity, and their role assignments remain until you explicitly remove them. They may continue to incur charges. After verifying the new app, remove only the obsolete resources and the old identity's Foundry role assignment. Do not delete the resource group if it now contains the Web App or other resources you need. Browser history on the old origin does not transfer automatically.
 
 ## Verify and Embed
 
@@ -74,7 +104,7 @@ curl --no-buffer --fail https://<app-fqdn>/api/chat \
   --data '{"message":"What does the State Treasurer do?"}'
 ```
 
-The chat check incurs normal Foundry usage charges. Expect `start`, incremental `delta`, and final `done` events. Also open the widget, ask a follow-up, and confirm citation links. TCP startup, liveness and readiness probes check the process without repeatedly calling Foundry; `/api/status` is the separate dependency check.
+The chat check incurs normal Foundry usage charges. Expect `start`, incremental `delta`, and final `done` events. Also open the widget, ask a follow-up, and confirm citation links. Always On keeps the process warm; `/api/status` separately verifies Foundry access.
 
 Add the emitted script to the host website:
 
@@ -82,16 +112,17 @@ Add the emitted script to the host website:
 <script src="https://<app-fqdn>/treasurer-chat.js" defer></script>
 ```
 
-If the host has a Content Security Policy, permit the app origin in both `script-src` and `frame-src`. API calls originate inside the widget iframe on the same origin as the API, so production does not require permissive cross-origin CORS settings. Do not add `X-Frame-Options: DENY` or `SAMEORIGIN` on the widget. Any additional gateway must support incremental responses and disable buffering on `/api/chat`. Container Apps managed HTTP ingress has a request timeout of approximately 240 seconds; long-running agent tools must fit within it.
+If the host has a Content Security Policy, permit the app origin in both `script-src` and `frame-src`. API calls originate inside the widget iframe on the same origin as the API, so production does not require permissive CORS settings. Do not add `X-Frame-Options: DENY` or `SAMEORIGIN` on the widget. Additional gateways must support incremental responses and disable buffering on `/api/chat`. Linux App Service has a front-end request timeout of approximately 240 seconds; do not assume streaming removes platform limits for long-running agent tools.
 
 ## Operations and Limits
 
-- One warm replica avoids scale-to-zero latency. One maximum replica and single active revision accommodate the server's process-local citation allowlist. A restart or new revision still clears that allowlist, so old file citation downloads may return 404. Implement shared, session-scoped citation authorization before horizontal scaling; this baseline is not highly available.
+- Keep one App Service instance and one Node process: the citation allowlist is process-local. A restart or deployment clears it, so old file citations can return 404. Implement shared, session-scoped citation authorization before scaling out. This baseline is not highly available.
 - The API is intentionally anonymous for a public widget. CORS is not authentication or abuse protection. Before a public production launch, address rate limiting, budget alerts, conversation/file authorization, retention, and access controls as required. This template does not provide a WAF or claim to make the current API production-hardened.
-- Foundry authentication uses `DefaultAzureCredential` and the identity's `AZURE_CLIENT_ID`. No API keys or client secrets are stored in parameters or the frontend. Foundry tools may need their own existing permissions; the widget identity's project role does not grant tool access to unrelated resources.
-- Container hosting, ACR, builds, logs and Foundry usage incur charges. The log cap is not an overall spending limit and can stop log ingestion when reached. The warm replica continues to cost money while idle. Review Azure budgets and service prices before deployment.
-- Logs go to Log Analytics. Avoid logging prompts, responses, or credentials. Follow current container logs with `az containerapp logs show --subscription <subscription-id> --resource-group rg-<environmentName> --name ca-<environmentName> --follow` (requires the Azure CLI Container Apps extension).
-- No automatic CI/CD or publishing occurs. Run the deployment script again after code changes. Pin approved base image digests and configure image retention/scanning for your organization's release process.
+- `DefaultAzureCredential` uses the Web App's system-assigned identity. No `AZURE_CLIENT_ID` or secrets are needed. Foundry tools may still need their own existing permissions; the widget's project role does not grant tool access to unrelated resources.
+- The B1 plan is billed while provisioned, including when the app is idle or stopped. Foundry usage incurs separate charges. Review service prices and configure budgets before deployment.
+- Use the Web App's Deployment Center and Monitoring > Log stream in the Azure portal for deployment and startup diagnostics. Enable App Service application logging when needed; this setup does not create a Log Analytics workspace. Avoid logging prompts, responses, or credentials.
+- If the final Foundry check fails, the script exits nonzero but leaves the Web App deployed. Check RBAC, endpoint, and agent settings, then rerun the printed `curl` command. New role assignments can require more time than the retry window; do not redeploy just to repeat the connectivity check.
+- No automatic Git push deployment is configured. `npm run deploy -- ...` performs the complete release; FTP and SCM basic authentication are disabled, and Azure CLI deploys with your Entra login.
 
 ## Local Validation
 
@@ -101,18 +132,18 @@ az bicep build-params --file infra/main.bicepparam --stdout > /dev/null
 bash -n infra/deploy.sh
 npm test
 npm run lint
-docker build -t foundry-chatbot:local .
+npm run build
 ```
 
-Local compilation does not validate subscription permissions, quota, networking, role propagation or the existing agent. Use the deployment preview and post-deployment checks for those environment-specific requirements. A local container does not inherit your host's Azure CLI credentials or an Azure managed identity.
+The deployment tests mock cloud commands and do not provision resources. Local compilation and tests cannot validate subscription permissions, quota, networking, role propagation, or the existing agent. Use the infrastructure preview and post-deployment checks for those environment-specific requirements.
 
 ## Cleanup
 
 First retrieve the identity principal ID while the resource group still exists:
 
 ```bash
-az identity show --subscription <hosting-subscription-id> \
-  --resource-group rg-<environmentName> --name id-<environmentName> \
+az webapp identity show --subscription <hosting-subscription-id> \
+  --resource-group rg-<environmentName> --name <web-app-name> \
   --query principalId --output tsv
 ```
 
@@ -131,4 +162,4 @@ Then delete the hosting resource group (destructive; review its contents first):
 az group delete --subscription <hosting-subscription-id> --name rg-<environmentName>
 ```
 
-This preserves the existing Foundry account, project, agent and data. The cross-resource-group role assignment is removed separately above to avoid leaving an orphaned principal. Subscription deployment history may remain, but does not itself incur hosting charges.
+This preserves the existing Foundry account, project, agent, and data when they are outside the hosting group. Remove the cross-resource-group role assignment first to avoid leaving an orphaned principal. Deleting only the Web App does not remove the billable App Service plan; deleting the reviewed hosting group removes both. Subscription deployment history may remain but does not itself incur hosting charges.

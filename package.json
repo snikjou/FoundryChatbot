@@ -7,9 +7,10 @@
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
     "dev:client": "vite",
     "dev:server": "tsx watch server/index.ts",
-    "build": "tsc -b && vite build",
-    "start": "tsx server/index.ts",
-    "test": "node --import tsx --test server/*.test.ts src/*.test.ts",
+    "build": "tsc -b && vite build && tsc -p tsconfig.server.json",
+    "start": "node build/server/index.js",
+    "deploy": "bash infra/deploy.sh",
+    "test": "node --import tsx --test server/*.test.ts src/*.test.ts infra/*.test.ts",
     "lint": "eslint ."
   },
   "dependencies": {

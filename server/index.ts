@@ -1,6 +1,5 @@
 import "dotenv/config";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { AIProjectClient } from "@azure/ai-projects";
 import { DefaultAzureCredential } from "@azure/identity";
 import cors from "cors";
@@ -148,8 +147,7 @@ app.delete("/api/conversations/:conversationId", async (request, response) => {
   }
 });
 
-const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const distDirectory = path.resolve(currentDirectory, "../dist");
+const distDirectory = path.resolve("dist");
 app.use(express.static(distDirectory));
 app.get("/{*path}", (_request, response) => response.sendFile(path.join(distDirectory, "index.html")));
 

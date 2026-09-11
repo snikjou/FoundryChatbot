@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 2 || $# -gt 3 || ( $# -eq 3 && "$3" != '--what-if' ) ]]; then
-  printf 'Usage: bash infra/deploy.sh <subscription-id> <parameters.bicepparam> [--what-if]\n' >&2
+if [[ $# -lt 1 || $# -gt 3 || ( $# -eq 3 && "$3" != '--what-if' ) ]]; then
+  printf 'Usage: npm run deploy -- <subscription-id> [parameters.bicepparam] [--what-if]\n' >&2
   exit 1
 fi
 
@@ -14,9 +14,14 @@ for tool in az node; do
 done
 
 subscription_id="$1"
-parameters_path="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$2")"
-mode="${3:-deploy}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+parameters_argument="${2:-$repo_root/infra/main.bicepparam}"
+mode="${3:-deploy}"
+if [[ "$parameters_argument" == '--what-if' ]]; then
+  parameters_argument="$repo_root/infra/main.bicepparam"
+  mode='--what-if'
+fi
+parameters_path="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$parameters_argument")"
 cd "$repo_root"
 
 az account show --subscription "$subscription_id" --output none
@@ -57,50 +62,85 @@ if [[ "$mode" == '--what-if' ]]; then
     --name "$deployment_name" \
     --location "$location" \
     --template-file infra/main.bicep \
-    --parameters "@$compiled_parameters" deployApplication=false
+    --parameters "@$compiled_parameters"
   exit 0
 fi
 
-printf 'Provisioning registry, identity, logs, environment and Foundry access...\n'
+for tool in npm zip curl; do
+  if ! command -v "$tool" > /dev/null; then
+    printf 'Required tool is missing: %s\n' "$tool" >&2
+    exit 1
+  fi
+done
+
+printf 'Checking Azure deployment prerequisites...\n'
+az provider register --subscription "$subscription_id" --namespace Microsoft.Web --wait --output none
+if ! az deployment sub validate \
+  --subscription "$subscription_id" \
+  --name "$deployment_name" \
+  --location "$location" \
+  --template-file infra/main.bicep \
+  --parameters "@$compiled_parameters" \
+  --output none; then
+  printf '\nAzure preflight failed; the app was not built or deployed.\n' >&2
+  printf 'If Azure reports SubscriptionIsOverQuotaForSku, request App Service B1 quota in %s for subscription %s.\n' "$location" "$subscription_id" >&2
+  printf 'Use the minimum new limit reported by Azure (at least 1 for this single-instance plan).\n' >&2
+  printf 'In Azure Portal, open Help + support > Create a support request > Service and subscription limits (quotas), and select App Service.\n' >&2
+  printf 'After the quota is approved or the reported error is resolved, rerun the same deploy command.\n' >&2
+  exit 1
+fi
+
+printf 'Installing dependencies, testing and building the app...\n'
+npm ci --include=dev
+npm test
+npm run lint
+npm run build
+
+printf 'Packaging compiled code and production dependencies...\n'
+package_directory="$temporary_directory/package"
+mkdir -p "$package_directory/build"
+cp package.json package-lock.json "$package_directory/"
+cp -R build/server "$package_directory/build/"
+cp -R dist "$package_directory/"
+npm ci --omit=dev --prefix "$package_directory"
+pushd "$package_directory" > /dev/null
+zip -qr "$temporary_directory/app.zip" package.json package-lock.json build dist node_modules
+popd > /dev/null
+
+printf 'Provisioning the Web App and Foundry access...\n'
 az deployment sub create \
   --subscription "$subscription_id" \
   --name "$deployment_name" \
   --location "$location" \
   --template-file infra/main.bicep \
-  --parameters "@$compiled_parameters" deployApplication=false \
-  --output none
+  --parameters "@$compiled_parameters" \
+  --query properties.outputs --output json > "$temporary_directory/outputs.json"
 
 deployment_output() {
-  az deployment sub show --subscription "$subscription_id" --name "$deployment_name" \
-    --query "properties.outputs.$1.value" --output tsv
+  node -e 'const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); const value = data[process.argv[2]]?.value; if (typeof value !== "string" || !value) throw new Error(`Missing deployment output: ${process.argv[2]}`); console.log(value);' "$temporary_directory/outputs.json" "$1"
 }
 
-registry_name="$(deployment_output registryName)"
-registry_server="$(deployment_output registryLoginServer)"
-image_tag="$(node -e 'console.log(Date.now() + "-" + require("node:crypto").randomUUID().slice(0, 8))')"
-image="$registry_server/chatbot:$image_tag"
+resource_group="$(deployment_output resourceGroupName)"
+web_app_name="$(deployment_output webAppName)"
 
-printf 'Building and pushing %s using ACR Tasks...\n' "$image"
-az acr build --subscription "$subscription_id" --registry "$registry_name" \
-  --image "chatbot:$image_tag" --platform linux/amd64 --file Dockerfile .
-
-printf 'Deploying the chatbot image...\n'
-az deployment sub create \
+printf 'Deploying the app ZIP to %s...\n' "$web_app_name"
+az webapp deploy \
   --subscription "$subscription_id" \
-  --name "$deployment_name" \
-  --location "$location" \
-  --template-file infra/main.bicep \
-  --parameters "@$compiled_parameters" deployApplication=true containerImage="$image" \
+  --resource-group "$resource_group" \
+  --name "$web_app_name" \
+  --src-path "$temporary_directory/app.zip" \
+  --type zip --clean true --restart true --track-status true --timeout 600000 \
   --output none
 
 widget_url="$(deployment_output widgetUrl)"
 printf '\nWidget URL: %s\n' "$widget_url"
 printf 'Embed: %s\n' "$(deployment_output embedScript)"
 printf 'Checking managed-identity access to Foundry...\n'
-node --input-type=module - "$widget_url" <<'NODE'
-const response = await fetch(`${process.argv[2]}/api/status`, { signal: AbortSignal.timeout(30000) });
-if (!response.ok) {
-  throw new Error(`Deployment finished, but the Foundry check returned HTTP ${response.status}. Check project RBAC, endpoint and agent name; new role assignments may need time to propagate.`);
-}
-console.log('Foundry connectivity check passed.');
-NODE
+if ! curl --fail --silent --show-error --output /dev/null \
+  --retry 8 --retry-delay 15 --retry-all-errors --retry-max-time 180 --max-time 30 \
+  "$widget_url/api/status"; then
+  printf 'The Web App was deployed, but the Foundry check failed. Check project RBAC, endpoint and agent name; new role assignments may need more time to propagate.\n' >&2
+  printf 'Recheck with: curl --fail %s/api/status\n' "$widget_url" >&2
+  exit 1
+fi
+printf 'Foundry connectivity check passed.\n'

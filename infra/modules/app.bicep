@@ -1,92 +1,58 @@
 param environmentName string
 param location string
 param tags object
-param managedEnvironmentId string
-param identityId string
-param identityClientId string
-param registryLoginServer string
-@minLength(1)
-param containerImage string
+param planId string
 param foundryProjectEndpoint string
 param foundryAgentName string
 
-resource app 'Microsoft.App/containerApps@2024-03-01' = {
-  name: 'ca-${environmentName}'
+resource app 'Microsoft.Web/sites@2024-11-01' = {
+  name: 'app-${environmentName}-${uniqueString(resourceGroup().id)}'
   location: location
   tags: tags
+  kind: 'app,linux'
   identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${identityId}': {}
-    }
+    type: 'SystemAssigned'
   }
   properties: {
-    managedEnvironmentId: managedEnvironmentId
-    workloadProfileName: 'Consumption'
-    configuration: {
-      activeRevisionsMode: 'Single'
-      ingress: {
-        external: true
-        targetPort: 3001
-        transport: 'http'
-        allowInsecure: false
-      }
-      registries: [
-        {
-          server: registryLoginServer
-          identity: identityId
-        }
+    serverFarmId: planId
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'NODE|22-lts'
+      appCommandLine: 'npm start'
+      alwaysOn: true
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      scmMinTlsVersion: '1.2'
+      http20Enabled: true
+      appSettings: [
+        { name: 'NODE_ENV', value: 'production' }
+        { name: 'SCM_DO_BUILD_DURING_DEPLOYMENT', value: 'false' }
+        { name: 'WEBSITE_RUN_FROM_PACKAGE', value: '1' }
+        { name: 'FOUNDRY_PROJECT_ENDPOINT', value: foundryProjectEndpoint }
+        { name: 'FOUNDRY_AGENT_NAME', value: foundryAgentName }
       ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'chatbot'
-          image: containerImage
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-          env: [
-            { name: 'NODE_ENV', value: 'production' }
-            { name: 'PORT', value: '3001' }
-            { name: 'AZURE_CLIENT_ID', value: identityClientId }
-            { name: 'FOUNDRY_PROJECT_ENDPOINT', value: foundryProjectEndpoint }
-            { name: 'FOUNDRY_AGENT_NAME', value: foundryAgentName }
-          ]
-          probes: [
-            {
-              type: 'Startup'
-              tcpSocket: { port: 3001 }
-              initialDelaySeconds: 1
-              periodSeconds: 2
-              timeoutSeconds: 1
-              failureThreshold: 60
-            }
-            {
-              type: 'Liveness'
-              tcpSocket: { port: 3001 }
-              periodSeconds: 10
-              timeoutSeconds: 2
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              tcpSocket: { port: 3001 }
-              periodSeconds: 5
-              timeoutSeconds: 2
-              failureThreshold: 3
-            }
-          ]
-        }
-      ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 1
-      }
     }
   }
 }
 
-output widgetUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
-output embedScript string = '<script src="https://${app.properties.configuration.ingress.fqdn}/treasurer-chat.js" defer></script>'
+resource scmPublishing 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-11-01' = {
+  parent: app
+  name: 'scm'
+  properties: {
+    allow: false
+  }
+}
+
+resource ftpPublishing 'Microsoft.Web/sites/basicPublishingCredentialsPolicies@2024-11-01' = {
+  parent: app
+  name: 'ftp'
+  properties: {
+    allow: false
+  }
+}
+
+output appName string = app.name
+output appId string = app.id
+output principalId string = app.identity.principalId
+output widgetUrl string = 'https://${app.properties.defaultHostName}'
+output embedScript string = '<script src="https://${app.properties.defaultHostName}/treasurer-chat.js" defer></script>'
