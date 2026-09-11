@@ -18,17 +18,45 @@ Core capabilities include:
 
 ## Prerequisites
 
-Before connecting the UI, you will need:
+- Node.js 22.12 or newer and npm. Node.js 22 LTS is recommended.
+- Azure CLI (`az`) for local authentication.
+- An Azure subscription with an existing Microsoft Foundry project and a published agent. The application does not create the agent or deploy its model.
+- The Foundry project endpoint and agent name, plus an Azure account authorized to use the project (for example, with the Azure AI User role at project scope).
 
-- An Azure subscription
-- A Microsoft Foundry project
-- A deployed model or agent
-- The endpoint and deployment or agent identifier for your Foundry resource
-- A secure backend service that authenticates requests to Foundry
+The Express backend is included in this repository. Docker and Bicep are not required for local development; Azure hosting requirements are covered in [the deployment guide](infra/README.md).
 
-## Configuration
+## Run Locally
 
-Copy `.env.example` to `.env` and provide the Microsoft Foundry project endpoint and agent name:
+Run all commands from the repository root, the directory containing [package.json](package.json).
+
+### 1. Install Dependencies
+
+```bash
+node --version
+npm --version
+npm ci
+```
+
+`npm ci` installs the versions recorded in the lockfile, including the development tools needed to build and run this project.
+
+### 2. Sign In to Azure
+
+```bash
+az login
+az account set --subscription "<subscription-id>"
+```
+
+In a remote terminal or Codespace where browser sign-in is unavailable, use `az login --use-device-code`. Select an account with access to the configured Foundry project.
+
+### 3. Configure the Backend
+
+Create a local environment file from [.env.example](.env.example), unless you already have one:
+
+```bash
+cp -n .env.example .env
+```
+
+Edit the local `.env` file with your actual values:
 
 ```env
 FOUNDRY_PROJECT_ENDPOINT=https://<resource-name>.services.ai.azure.com/api/projects/<project-name>
@@ -36,26 +64,69 @@ FOUNDRY_AGENT_NAME=<agent-name>
 PORT=3001
 ```
 
+Use the **project endpoint** from the Foundry portal and the **published agent name**, not a model deployment name or an Azure OpenAI `/openai/` endpoint. Keep `PORT=3001` for the default local setup: [vite.config.ts](vite.config.ts) proxies `/api` requests to that port.
+
 > [!IMPORTANT]
-> Do not expose API keys, connection strings, or other secrets in browser code. The Express backend authenticates with `DefaultAzureCredential`, which supports Azure CLI credentials for local development and managed identity in Azure.
+> The backend authenticates with `DefaultAzureCredential`, using your Azure CLI login locally and managed identity in Azure. No API key is required for this setup. Do not commit `.env` or expose credentials in browser code.
 
-## Getting Started
+### 4. Start the Application
 
-1. Sign in to Azure with `az login` and select an account that can access the Foundry project.
-2. Install dependencies with `npm install`.
-3. Configure `.env` as shown above.
-4. Start both services with `npm run dev`.
-5. Open `http://localhost:5173`.
+```bash
+npm run dev
+```
 
-For a production build, run `npm run build`, then `npm start`. The Express server serves the generated `dist` directory on `http://localhost:3001`.
+This starts both processes with automatic reload:
 
-Additional checks:
+- Vite widget UI: `http://localhost:5173`.
+- Express API: `http://localhost:3001`, accessed by the UI through Vite's `/api` proxy.
+
+Open the Vite URL and select **Ask Treasurer Assist** to open the widget. If port 5173 is already occupied, Vite prints the next available port; use the URL shown in its output. In Codespaces, open the forwarded Vite port from VS Code's Ports view. The API port does not need to be publicly forwarded.
+
+Stop both processes with `Ctrl+C`. Restart the backend after changing environment variables. To run the processes in separate terminals, use `npm run dev:server` and `npm run dev:client`.
+
+### 5. Check the Connection
+
+With the backend running:
+
+```bash
+curl --fail http://localhost:3001/api/status
+```
+
+A successful response contains `"connected": true` and the agent name. Then send a question in the widget and confirm that the answer streams in. Chat requests use your configured Foundry resources and incur normal service charges.
+
+## Run a Production Build
+
+After installing dependencies, signing in, and configuring `.env` as above:
+
+```bash
+npm run build
+npm start
+```
+
+Open `http://localhost:3001` (or the port specified by `PORT`). Express serves both the built widget and the API, so Vite is not needed. Stop the development backend first if it is already using port 3001. Re-run `npm run build` after frontend changes.
+
+`npm start` uses `tsx`, which is a development dependency; do not install with `--omit=dev` for this workflow. For a production container with compiled JavaScript and production-only dependencies, use the [Dockerfile](Dockerfile) and [Azure deployment guide](infra/README.md). A local Docker container does not automatically inherit your host's Azure CLI login.
+
+## Tests and Checks
 
 ```bash
 npm test
 npm run lint
 npm run build
 ```
+
+The automated tests cover streaming response handling and citation formatting and do not require Azure credentials. The build type-checks the project and produces the widget assets; it does not deploy anything to Azure.
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| Backend exits with a configuration error | Ensure `.env` is in the repository root and both Foundry variables contain real values. Run commands from that directory. |
+| Widget says "Temporarily unavailable" or `/api/status` returns 503 | Run `az login` again if needed; verify the selected account, project endpoint, published agent name, and project permissions. Check the backend terminal for the underlying error. New role assignments can take time to propagate. |
+| Port 3001 is already in use | Stop the other backend process. If you change `PORT`, also update Vite's proxy target for development. |
+| UI opens but API requests fail | Confirm both development processes are running and the Vite proxy targets the backend port. |
+| Production page is missing or outdated | Run `npm run build` before `npm start`; the backend serves the generated assets. |
+| Answers take time to begin | Streaming displays text as soon as Foundry produces it, but model inference and agent tools can still delay the first text. |
 
 ## Response Latency
 
