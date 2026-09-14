@@ -1,13 +1,30 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
 
 type Command = { tool: string; args: string[]; cwd: string };
 
-const test = process.platform === "win32" ? nodeTest.skip : nodeTest;
+// On Windows, `bash` resolves to the WSL launcher stub, which never completes without a WSL
+// distribution installed, so locate the POSIX shell that ships with Git for Windows instead.
+function findBash() {
+  if (process.platform !== "win32") return "bash";
+  const roots = [process.env.ProgramW6432, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]];
+  const localPrograms = process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs");
+  return [...roots, localPrograms]
+    .filter((root): root is string => Boolean(root))
+    .map(root => path.join(root, "Git", "bin", "bash.exe"))
+    .find(existsSync);
+}
+
+const bash = findBash();
+const test = bash ? nodeTest : nodeTest.skip;
+
+// Git Bash needs POSIX paths (`C:\dir` becomes `/c/dir`) for its own shell and utilities.
+const shellPath = (value: string) =>
+  process.platform === "win32" ? `/${value.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1")}` : value;
 
 function runDeployment(args: string[], values: Record<string, string> = {}, failCommand = "") {
   const directory = mkdtempSync(path.join(tmpdir(), "webapp-deploy-test-"));
@@ -38,7 +55,7 @@ function runDeployment(args: string[], values: Record<string, string> = {}, fail
     writeFileSync(path.join(repository, "infra/main.bicepparam"), "using './main.bicep'\n");
     writeFileSync(path.join(directory, "custom parameters.bicepparam"), "using './repository/infra/main.bicep'\n");
 
-    const mockTool = `#!${process.execPath}
+    const mockTool = `#!/usr/bin/env node
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -76,18 +93,21 @@ if (tool === 'az') {
       writeFileSync(path.join(tools, tool), mockTool, { mode: 0o755 });
     }
 
-    const result = spawnSync("bash", [path.join(repository, "infra/deploy.sh"), ...args], {
+    // Git Bash prepends its own /usr/bin and /mingw64/bin to PATH at startup, which would shadow
+    // mocked tools such as curl, so the mock directory is put first from inside the shell.
+    const launch = ['export PATH="$1:$PATH"; shift; exec "$@"', "bash", shellPath(tools)];
+    const result = spawnSync(bash!, ["-c", ...launch, shellPath(path.join(repository, "infra/deploy.sh")), ...args], {
       cwd: directory,
       env: {
         ...process.env,
-        PATH: `${tools}:${process.env.PATH}`,
-        TMPDIR: directory,
+        PATH: `${tools}${path.delimiter}${process.env.PATH}`,
+        TMPDIR: shellPath(directory),
         DEPLOY_TEST_LOG: log,
         DEPLOY_TEST_PARAMETERS: JSON.stringify({ parameters }),
         DEPLOY_TEST_FAIL: failCommand,
       },
       encoding: "utf8",
-      timeout: 30000,
+      timeout: 120000,
     });
     assert.ifError(result.error);
     const commands: Command[] = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
