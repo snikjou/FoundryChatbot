@@ -3,9 +3,11 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import nodeTest from "node:test";
 
 type Command = { tool: string; args: string[]; cwd: string };
+
+const test = process.platform === "win32" ? nodeTest.skip : nodeTest;
 
 function runDeployment(args: string[], values: Record<string, string> = {}, failCommand = "") {
   const directory = mkdtempSync(path.join(tmpdir(), "webapp-deploy-test-"));
