@@ -66,12 +66,28 @@ if [[ "$mode" == '--what-if' ]]; then
   exit 0
 fi
 
-for tool in npm zip curl; do
+for tool in npm curl; do
   if ! command -v "$tool" > /dev/null; then
     printf 'Required tool is missing: %s\n' "$tool" >&2
     exit 1
   fi
 done
+
+# Git for Windows ships no zip command and its GNU tar cannot write ZIP archives, so fall back to
+# the bsdtar included with Windows, which stores the same forward-slash layout Azure expects.
+zip_tool=''
+windows_tar=''
+if command -v cygpath > /dev/null; then
+  windows_tar="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}")/System32/tar.exe"
+fi
+if command -v zip > /dev/null; then
+  zip_tool='zip'
+elif [[ -x "$windows_tar" ]]; then
+  zip_tool="$windows_tar"
+else
+  printf 'Required tool is missing: zip\n' >&2
+  exit 1
+fi
 
 printf 'Checking Azure deployment prerequisites...\n'
 az provider register --subscription "$subscription_id" --namespace Microsoft.Web --wait --output none
@@ -104,7 +120,11 @@ cp -R build/server "$package_directory/build/"
 cp -R dist "$package_directory/"
 npm ci --omit=dev --prefix "$package_directory"
 pushd "$package_directory" > /dev/null
-zip -qr "$temporary_directory/app.zip" package.json package-lock.json build dist node_modules
+if [[ "$zip_tool" == 'zip' ]]; then
+  zip -qr "$temporary_directory/app.zip" package.json package-lock.json build dist node_modules
+else
+  "$zip_tool" -a -cf "$(cygpath -w "$temporary_directory/app.zip")" package.json package-lock.json build dist node_modules
+fi
 popd > /dev/null
 
 printf 'Provisioning the Web App and Foundry access...\n'

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
 
-type Command = { tool: string; args: string[]; cwd: string };
+type Command = { tool: string; args: string[]; cwd: string; archive?: string };
 
 // On Windows, `bash` resolves to the WSL launcher stub, which never completes without a WSL
 // distribution installed, so locate the POSIX shell that ships with Git for Windows instead.
@@ -19,14 +19,22 @@ function findBash() {
     .find(existsSync);
 }
 
+// Packaging falls back to the bsdtar bundled with Windows when the zip command is unavailable.
+function hasSystemArchiver() {
+  const root = process.env.SYSTEMROOT ?? process.env.SystemRoot;
+  if (process.platform === "win32" && root && existsSync(path.join(root, "System32", "tar.exe"))) return true;
+  return !spawnSync("zip", ["-h"], { encoding: "utf8" }).error;
+}
+
 const bash = findBash();
 const test = bash ? nodeTest : nodeTest.skip;
+const archiveTest = bash && hasSystemArchiver() ? nodeTest : nodeTest.skip;
 
 // Git Bash needs POSIX paths (`C:\dir` becomes `/c/dir`) for its own shell and utilities.
 const shellPath = (value: string) =>
   process.platform === "win32" ? `/${value.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "$1")}` : value;
 
-function runDeployment(args: string[], values: Record<string, string> = {}, failCommand = "") {
+function runDeployment(args: string[], values: Record<string, string> = {}, failCommand = "", omitTools: string[] = []) {
   const directory = mkdtempSync(path.join(tmpdir(), "webapp-deploy-test-"));
   const repository = path.join(directory, "repository");
   const tools = path.join(directory, "tools");
@@ -61,7 +69,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const tool = path.basename(process.argv[1]);
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.DEPLOY_TEST_LOG, JSON.stringify({ tool, args, cwd: process.cwd() }) + '\\n');
+const record = { tool, args, cwd: process.cwd() };
+const source = args.indexOf('--src-path');
+if (source >= 0 && fs.existsSync(args[source + 1])) record.archive = fs.readFileSync(args[source + 1]).subarray(0, 2).toString('latin1');
+fs.appendFileSync(process.env.DEPLOY_TEST_LOG, JSON.stringify(record) + '\\n');
 if (process.env.DEPLOY_TEST_FAIL && (tool + ':' + args.join(' ')).startsWith(process.env.DEPLOY_TEST_FAIL)) process.exit(1);
 if (tool === 'az') {
   const command = args.slice(0, 3).join(' ');
@@ -89,7 +100,7 @@ if (tool === 'az') {
   fs.writeFileSync(args[1], 'mock archive');
 }
 `;
-    for (const tool of ["az", "npm", "zip", "curl"]) {
+    for (const tool of ["az", "npm", "zip", "curl"].filter(name => !omitTools.includes(name))) {
       writeFileSync(path.join(tools, tool), mockTool, { mode: 0o755 });
     }
 
@@ -148,6 +159,13 @@ test("deployment builds before provisioning and uploads an allowlisted productio
   assert.ok(result.commands.filter(command => command.tool === "az" && command.args[0] !== "bicep").every(command => command.args.includes("test-subscription")));
   assert.match(result.stdout, /Foundry connectivity check passed/);
   assert.equal(result.commands.at(-1)?.tool, "curl");
+});
+
+archiveTest("packages a real ZIP when the zip command is unavailable", () => {
+  const result = runDeployment(["test-subscription"], {}, "", ["zip"]);
+  assert.equal(result.status, 0, result.stderr);
+  const upload = result.commands.find(command => command.tool === "az" && command.args[0] === "webapp");
+  assert.equal(upload?.archive, "PK");
 });
 
 test("custom parameter paths resolve from the caller's directory, including spaces", () => {

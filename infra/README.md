@@ -18,7 +18,7 @@ The resource group is `rg-<environmentName>`, the plan is `asp-<environmentName>
 
 ## Prerequisites
 
-- Linux or WSL with Bash, Node.js 22.12 or newer (22 LTS recommended), npm, `zip`, and `curl`. Builds happen locally and production dependencies are included in the ZIP; use Linux to match the hosting OS, especially if native dependencies are added later.
+- Bash with Node.js 22.12 or newer (22 LTS recommended), npm, and `curl`. Linux or WSL is recommended to match the hosting OS, especially if native dependencies are added later; Git Bash on Windows also works. Packaging uses `zip` when present and otherwise falls back to the `bsdtar` included with Windows. Builds happen locally and production dependencies are included in the ZIP.
 - Azure CLI 2.61 or newer and Bicep CLI (`az bicep install`). Use a current Azure CLI so ZIP deployment supports Entra authentication with password-based publishing disabled.
 - An Azure login with permission to create resource groups at subscription scope, deploy App Service resources, and assign roles on the existing Foundry project. Contributor plus Role Based Access Control Administrator at the appropriate scopes, or Owner, are examples. The script registers `Microsoft.Web` in the hosting subscription during deployment.
 - An existing `Microsoft.CognitiveServices/accounts/projects` Foundry project, its HTTPS endpoint, and a published agent name. Legacy hub-based projects are not supported. The project may be in another subscription in the same Entra tenant.
