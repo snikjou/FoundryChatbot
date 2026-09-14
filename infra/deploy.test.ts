@@ -14,7 +14,7 @@ function runDeployment(args: string[], values: Record<string, string> = {}, fail
   const log = path.join(directory, "commands.jsonl");
   const parameters = Object.fromEntries(Object.entries({
     environmentName: "test-app",
-    location: "eastus2",
+    location: "westus2",
     foundryProjectName: "test-project",
     foundryProjectEndpoint: "https://example.services.ai.azure.com/api/projects/test-project",
     foundryAgentName: "test-agent",
@@ -153,11 +153,11 @@ test("failed Azure preflight stops before building or deploying and explains quo
   assert.ok(result.commands.every(command => command.tool === "az"));
   assert.ok(!result.commands.some(command => command.args.includes("create") || command.args.includes("deploy")));
   assert.match(result.stderr, /Azure preflight failed; the app was not built or deployed/);
-  assert.match(result.stderr, /App Service B1 quota in eastus2 for subscription test-subscription/);
+  assert.match(result.stderr, /App Service B1 quota in westus2 for subscription test-subscription/);
   assert.match(result.stderr, /After the quota is approved/);
   const preflight = result.commands.at(-1);
   assert.ok(preflight?.args.includes("infra/main.bicep"));
-  assert.ok(preflight.args.includes("eastus2"));
+  assert.ok(preflight.args.includes("westus2"));
   assert.ok(preflight.args.some(argument => argument.startsWith("@") && argument.endsWith("parameters.json")));
 });
 
