@@ -1,6 +1,6 @@
 using './main.bicep'
 param environmentName = 'treasurer-dev'
-param location = 'eastus2'
+param location = 'westus2'
 param foundryResourceGroupName = 'rg-admin-7817'
 param foundryAccountName = 'admin-7817-resource'
 param foundryProjectName = 'admin-7817'
