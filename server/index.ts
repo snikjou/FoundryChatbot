@@ -1,9 +1,10 @@
 import "dotenv/config";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { AIProjectClient } from "@azure/ai-projects";
 import { DefaultAzureCredential } from "@azure/identity";
 import cors from "cors";
-import express from "express";
+import express, { type Request } from "express";
 import { formatResponse } from "./citations.js";
 
 const endpoint = process.env.FOUNDRY_PROJECT_ENDPOINT;
@@ -14,9 +15,37 @@ if (!endpoint || !agentName) {
   throw new Error("FOUNDRY_PROJECT_ENDPOINT and FOUNDRY_AGENT_NAME must be configured.");
 }
 
-const project = new AIProjectClient(endpoint, new DefaultAzureCredential());
-const openAI = project.getOpenAIClient();
+// When set, Foundry traffic goes through API Management, which authenticates this app by subscription key.
+const apimSubscriptionKey = process.env.APIM_SUBSCRIPTION_KEY;
+const apimKeyHeaders: Record<string, string> = apimSubscriptionKey
+  ? { "Ocp-Apim-Subscription-Key": apimSubscriptionKey }
+  : {};
+
+const project = new AIProjectClient(endpoint, new DefaultAzureCredential(), {
+  additionalPolicies: apimSubscriptionKey
+    ? [
+        {
+          position: "perCall",
+          policy: {
+            name: "apimSubscriptionKeyPolicy",
+            sendRequest(request, next) {
+              request.headers.set("Ocp-Apim-Subscription-Key", apimSubscriptionKey);
+              return next(request);
+            },
+          },
+        },
+      ]
+    : [],
+});
+const openAI = project.getOpenAIClient({ defaultHeaders: apimKeyHeaders });
 const app = express();
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 1));
+
+// Hashed visitor id so API Management can rate-limit per visitor without receiving raw IP addresses.
+const visitorHeaders = (request: Request): Record<string, string> =>
+  apimSubscriptionKey
+    ? { "X-Client-Id": createHash("sha256").update(request.ip ?? "unknown").digest("hex").slice(0, 32) }
+    : {};
 const citedFileIds = new Set<string>();
 
 app.use(cors({ origin: /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/ }));
@@ -51,7 +80,10 @@ app.post("/api/chat", async (request, response) => {
   try {
     let conversationId = existingConversationId;
     if (!conversationId) {
-      const conversation = await openAI.conversations.create({}, { signal: controller.signal });
+      const conversation = await openAI.conversations.create(
+        {},
+        { signal: controller.signal, headers: visitorHeaders(request) },
+      );
       conversationId = conversation.id;
     }
 
@@ -59,6 +91,7 @@ app.post("/api/chat", async (request, response) => {
     const options = {
       body: { agent_reference: { name: agentName, type: "agent_reference" } },
       signal: controller.signal,
+      headers: visitorHeaders(request),
     };
     let result;
     if (streaming) {
@@ -126,8 +159,8 @@ app.get("/api/files/:fileId/content", async (request, response) => {
     return;
   }
   try {
-    const file = await openAI.files.retrieve(request.params.fileId);
-    const content = await openAI.files.content(request.params.fileId);
+    const file = await     openAI.files.retrieve(request.params.fileId, { headers: visitorHeaders(request) });
+        const content = await openAI.files.content(request.params.fileId, { headers: visitorHeaders(request) });
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.attachment(file.filename);
     response.send(Buffer.from(await content.arrayBuffer()));
@@ -139,7 +172,7 @@ app.get("/api/files/:fileId/content", async (request, response) => {
 
 app.delete("/api/conversations/:conversationId", async (request, response) => {
   try {
-    await openAI.conversations.delete(request.params.conversationId);
+    await openAI.conversations.delete(request.params.conversationId, { headers: visitorHeaders(request) });
     response.status(204).end();
   } catch (error) {
     console.error("Foundry conversation cleanup failed:", error);

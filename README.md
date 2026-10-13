@@ -80,7 +80,7 @@ This starts both processes with automatic reload:
 - Vite widget UI: `http://localhost:5173`.
 - Express API: `http://localhost:3001`, accessed by the UI through Vite's `/api` proxy.
 
-Open the Vite URL and select **Ask Treasurer Assist** to open the widget. If port 5173 is already occupied, Vite prints the next available port; use the URL shown in its output. In Codespaces, open the forwarded Vite port from VS Code's Ports view. The API port does not need to be publicly forwarded.
+Open the Vite URL to use the chat; it fills the page. If port 5173 is already occupied, Vite prints the next available port; use the URL shown in its output. In Codespaces, open the forwarded Vite port from VS Code's Ports view. The API port does not need to be publicly forwarded.
 
 Stop both processes with `Ctrl+C`. Restart the backend after changing environment variables. To run the processes in separate terminals, use `npm run dev:server` and `npm run dev:client`.
 
