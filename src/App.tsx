@@ -1,5 +1,5 @@
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, Copy, MessageCircle, Plus, Send, UserRound, X } from "lucide-react";
+import { Check, CircleAlert, Copy, Plus, Send, UserRound } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import treasurerLogo from "../images/CASTO.jpg";
 import { readChatStream } from "./chat-stream";
@@ -25,7 +25,6 @@ function loadSession(): SavedSession {
 
 function App() {
   const [session, setSession] = useState<SavedSession>(loadSession);
-  const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [streamingText, setStreamingText] = useState("");
@@ -47,9 +46,9 @@ function App() {
   }, []);
 
   useEffect(() => {
-    window.parent.postMessage({ type: "treasurer-chat:resize", open: isOpen }, "*");
-    if (isOpen) window.setTimeout(() => inputRef.current?.focus(), 180);
-  }, [isOpen]);
+    window.parent.postMessage({ type: "treasurer-chat:resize", open: true }, "*");
+    inputRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: isSending ? "auto" : "smooth" });
@@ -127,9 +126,8 @@ function App() {
   };
 
   return (
-    <div className={`widget-shell ${isOpen ? "is-open" : ""}`}>
-      {isOpen && (
-        <section className="chat-window" aria-label="Treasurer Assist chat">
+    <div className="widget-shell">
+      <section className="chat-window" aria-label="Treasurer Assist chat">
           <header className="widget-header">
             <div className="header-mark"><img src={treasurerLogo} alt="" /></div>
             <div className="header-title">
@@ -137,7 +135,6 @@ function App() {
               <span><i className={connected === false ? "offline" : ""} />{connected === false ? "Temporarily unavailable" : "Official virtual assistant"}</span>
             </div>
             <button className="header-button" onClick={startNewConversation} disabled={isSending} aria-label="Start a new conversation" title="New conversation"><Plus /></button>
-            <button className="header-button" onClick={() => setIsOpen(false)} aria-label="Close chat"><X /></button>
           </header>
 
           <div className="conversation" aria-live="polite">
@@ -199,13 +196,7 @@ function App() {
             </form>
             <p>Powered by Microsoft Foundry</p>
           </footer>
-        </section>
-      )}
-
-      <button className="chat-launcher" onClick={() => setIsOpen((open) => !open)} aria-label={isOpen ? "Close Treasurer Assist" : "Open Treasurer Assist"} aria-expanded={isOpen}>
-        {isOpen ? <X aria-hidden="true" /> : <MessageCircle aria-hidden="true" />}
-        {!isOpen && <span>Ask Treasurer Assist</span>}
-      </button>
+      </section>
     </div>
   );
 }
