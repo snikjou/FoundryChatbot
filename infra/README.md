@@ -27,7 +27,7 @@ The resource group is `rg-<environmentName>`, the plan is `asp-<environmentName>
 
 ## One-Command Deployment
 
-Review [main.bicepparam](main.bicepparam). Its existing project settings are retained; verify that they refer to your intended Foundry project. Set `environmentName` and `location`, and use the published agent name, not a model deployment name. The account, resource group, project name, and HTTPS project endpoint must all identify the same project. Do not add a trailing slash to the endpoint.
+Review [main.bicepparam](main.bicepparam). Its existing project settings are retained; verify that they refer to your intended Foundry project. Set `environmentName` and `location` (default `westus2`), and use the published agent name, not a model deployment name. The account, resource group, project name, and HTTPS project endpoint must all identify the same project. Do not add a trailing slash to the endpoint.
 
 From the repository root:
 
